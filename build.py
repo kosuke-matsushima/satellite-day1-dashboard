@@ -334,6 +334,159 @@ y_pred = clf.predict(features_test)
 acc10 = accuracy_score(y_test, y_pred)
 acc3  = accuracy_score(y_test_3, y_pred_3)"""
 
+    task13_code = """# === Head Only（FC層のみ学習） ===
+model = models.resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
+for param in model.parameters():
+    param.requires_grad = False          # 全層凍結
+model.fc = nn.Linear(2048, 10)           # 最終層だけ差し替え
+
+optimizer = optim.Adam(model.fc.parameters(), lr=1e-3)
+criterion = nn.CrossEntropyLoss()
+
+# === Full Fine-tuning（全層学習） ===
+model = models.resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
+model.fc = nn.Linear(2048, 10)           # 最終層差し替え
+# 全パラメータが requires_grad=True（デフォルト）
+
+optimizer = optim.Adam(model.parameters(), lr=1e-4)
+scheduler = CosineAnnealingLR(optimizer, T_max=10)
+
+# === 学習ループ（共通） ===
+for epoch in range(10):
+    model.train()
+    for images, labels in train_loader:          # batch_size=64
+        images, labels = images.to(device), labels.to(device)
+        outputs = model(images)
+        loss = criterion(outputs, labels)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+    scheduler.step()
+
+    # テスト評価
+    model.eval()
+    correct = sum((model(x.to(device)).argmax(1) == y.to(device)).sum()
+                  for x, y in test_loader)
+    test_acc = correct / len(test_dataset)
+
+# === データ拡張（学習時） ===
+train_transform = transforms.Compose([
+    transforms.Resize(224),
+    transforms.RandomHorizontalFlip(),
+    transforms.RandomVerticalFlip(),
+    transforms.RandomRotation(15),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                         std=[0.229, 0.224, 0.225]),
+])"""
+
+    task14_code = """# === L1/L2/L3 の結果を読み込んで比較 ===
+l1 = np.load('L1_results.npz', allow_pickle=True)
+l2 = np.load('L2_results.npz', allow_pickle=True)
+l3 = np.load('L3_results.npz', allow_pickle=True)
+
+# 精度テーブル作成
+results = {
+    'L1': {'3class': l1['accuracy'], '10class': None},
+    'L2': {'3class': l2['accuracy_3class'], '10class': l2['accuracy_10class']},
+    'L3_head': {'10class': l3['accuracy_10class_head']},
+    'L3_full': {'3class': l3['accuracy_3class'], '10class': l3['accuracy_10class_full']},
+    'L3_half': {'10class': l3['accuracy_10class_half']},
+}
+
+# 混同行列の比較（L2 vs L3）
+from sklearn.metrics import confusion_matrix, classification_report
+cm_l2 = confusion_matrix(y_test, l2['predictions'])
+cm_l3 = confusion_matrix(y_test, l3['predictions_full'])
+
+# クラス別F1スコアでレーダーチャート
+report_l2 = classification_report(y_test, l2['predictions'], output_dict=True)
+report_l3 = classification_report(y_test, l3['predictions_full'], output_dict=True)
+
+# 同一画像での予測比較
+for idx in sample_indices:
+    print(f"True: {class_names[y_test[idx]]}")
+    print(f"  L1: {l1_pred_3class[idx]}")
+    print(f"  L2: {class_names[l2['predictions'][idx]]}")
+    print(f"  L3: {class_names[l3['predictions_full'][idx]]}")"""
+
+    task15_code_classical = """# === 手作り特徴量の抽出（32次元） ===
+def extract_features(images_13band):
+    features = []
+    for img in images_13band:
+        band_mean = img.mean(axis=(1, 2))    # 13バンドの平均
+        band_std = img.std(axis=(1, 2))      # 13バンドの標準偏差
+        ndvi = (img[7] - img[3]) / (img[7] + img[3] + 1e-8)
+        ndwi = (img[2] - img[7]) / (img[2] + img[7] + 1e-8)
+        ndbi = (img[11] - img[7]) / (img[11] + img[7] + 1e-8)
+        idx_feats = [ndvi.mean(), ndvi.std(), ndwi.mean(),
+                     ndwi.std(), ndbi.mean(), ndbi.std()]
+        features.append(np.concatenate([band_mean, band_std, idx_feats]))
+    return np.array(features)  # (N, 32)
+
+X_train = extract_features(train_images_13band)
+X_test = extract_features(test_images_13band)
+
+# === Random Forest ===
+from sklearn.ensemble import RandomForestClassifier
+rf = RandomForestClassifier(n_estimators=200, random_state=42)
+rf.fit(X_train, y_train)
+print(f"RF accuracy: {rf.score(X_test, y_test):.3f}")
+
+# === SVM (RBF kernel) ===
+from sklearn.svm import SVC
+from sklearn.preprocessing import StandardScaler
+scaler = StandardScaler().fit(X_train)
+svm = SVC(kernel='rbf', C=10, gamma='scale')
+svm.fit(scaler.transform(X_train), y_train)
+print(f"SVM accuracy: {svm.score(scaler.transform(X_test), y_test):.3f}")
+
+# === k-NN ===
+from sklearn.neighbors import KNeighborsClassifier
+knn = KNeighborsClassifier(n_neighbors=5)
+knn.fit(scaler.transform(X_train), y_train)
+print(f"k-NN accuracy: {knn.score(scaler.transform(X_test), y_test):.3f}")"""
+
+    task15_code_cnn = """# === Simple CNN（4層、ゼロから学習） ===
+class SimpleCNN(nn.Module):
+    def __init__(self, num_classes=10):
+        super().__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 32, 3, padding=1), nn.BatchNorm2d(32),
+            nn.ReLU(), nn.MaxPool2d(2),            # 64→32
+            nn.Conv2d(32, 64, 3, padding=1), nn.BatchNorm2d(64),
+            nn.ReLU(), nn.MaxPool2d(2),            # 32→16
+            nn.Conv2d(64, 128, 3, padding=1), nn.BatchNorm2d(128),
+            nn.ReLU(), nn.MaxPool2d(2),            # 16→8
+            nn.Conv2d(128, 256, 3, padding=1), nn.BatchNorm2d(256),
+            nn.ReLU(), nn.AdaptiveAvgPool2d(1),    # 8→1
+        )
+        self.classifier = nn.Linear(256, num_classes)
+
+    def forward(self, x):
+        x = self.features(x).flatten(1)
+        return self.classifier(x)
+
+model = SimpleCNN(num_classes=10).to(device)
+optimizer = optim.Adam(model.parameters(), lr=1e-3)
+# 入力: 64×64px RGB, 10エポック学習"""
+
+    task15_code_vit = """# === ViT-Tiny（timmライブラリで事前学習済みモデル） ===
+import timm
+
+model = timm.create_model('vit_tiny_patch16_224',
+                           pretrained=True,    # ImageNet事前学習
+                           num_classes=10)
+model = model.to(device)
+
+# ファインチューニング設定
+optimizer = optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
+scheduler = CosineAnnealingLR(optimizer, T_max=10)
+
+# 入力: 224×224px RGB, 10エポック学習
+# パッチサイズ: 16×16 → 14×14 = 196パッチ
+# 各パッチをトークンとしてTransformerで処理"""
+
     html_doc = f"""<!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -521,6 +674,8 @@ acc3  = accuracy_score(y_test_3, y_pred_3)"""
 
         {section_card('学習設定の解説', '<ul class="list-disc pl-6 space-y-1 text-slate-300"><li><strong>エポック</strong>: 全学習データ1周。10エポック = 21,600枚を10周。</li><li><strong>バッチサイズ64</strong>: 21,600枚を337バッチに分割。更新回数は <code>337×10=3,370</code>。</li><li><strong>Adam</strong>: 勢いを考慮してパラメータ更新する最適化手法。</li><li><strong>CosineAnnealing</strong>: 前半は大きく、後半は小さく学習率を下げる。</li><li><strong>データ拡張</strong>: 回転・反転で擬似データを増やして汎化を改善。</li><li><strong>正規化</strong>: <code>(値-平均)/標準偏差</code> でスケールを揃える（偏差値と同じ原理）。</li></ul>')}
 
+        {section_card('コードで何をやったか（要約）', details_block('展開する', code_block(task13_code, 'python')))}
+
         {section_card('GPUが必要な理由', '<p>CPUは少数コアの逐次処理、GPUは数千コアの並列処理。2350万パラメータ更新を3370回繰り返すFull FTはGPU前提。</p>')}
 
         {section_card('インタラクティブ学習曲線（Test Accuracy）', '<div id="plot-task13" class="w-full h-[460px]"></div>')}
@@ -564,6 +719,8 @@ acc3  = accuracy_score(y_test_3, y_pred_3)"""
             ['L3: FT Full (50% data)', '-', '98.0%', '+2.3pt (vs L2)'],
         ]))}
 
+        {section_card('コードで何をやったか（要約）', details_block('展開する', code_block(task14_code, 'python')))}
+
         {section_card('5つの主要な発見', '<ol class="list-decimal pl-6 space-y-1 text-slate-300"><li>L1→L2 が最大のジャンプ（+31.3pt）。</li><li>L2→L3 Full FT は +2.8pt の上積み。</li><li>Head Only は L2未満で、凍結条件ならLogRegが強い。</li><li>Full FTが最高精度（98.5%）。</li><li>学習データ50%でも98.0%（EuroSATのクリーンさを反映）。</li></ol>')}
 
         {image_block(image_map, 'L1_L2_L3_comparison_bar.png', 'L1_L2_L3_comparison_bar', 'L1→L2→L3の段差', '最も効く改善ステップが一目でわかる。')}
@@ -597,6 +754,12 @@ acc3  = accuracy_score(y_test_3, y_pred_3)"""
             ['NDVI/NDWI/NDBI平均', '3', ''],
             ['NDVI/NDWI/NDBI標準偏差', '3', '32'],
         ]))}
+
+        {section_card('古典ML コード（要約）', details_block('展開する', code_block(task15_code_classical, 'python')))}
+
+        {section_card('Simple CNN コード（要約）', details_block('展開する', code_block(task15_code_cnn, 'python')))}
+
+        {section_card('ViT-Tiny コード（要約）', details_block('展開する', code_block(task15_code_vit, 'python')))}
 
         {section_card('全8モデル概要', table_html(['モデル', 'カテゴリ', '精度'], [
             ['L1: Index Threshold', 'L1', '64.4'],
